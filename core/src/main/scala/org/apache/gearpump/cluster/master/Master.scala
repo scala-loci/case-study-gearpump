@@ -81,6 +81,27 @@ private[cluster] class Master extends Actor with Stash {
     def connect = listen[multitier.Worker] { workerConnectionListener }
 
     override def context = retier.contexts.Immediate.global
+
+    val self = Master.this.self
+
+    val birth = Master.this.birth
+
+    def registerNewWorker() = {
+      val workerId = WorkerId(nextWorkerId, System.currentTimeMillis())
+      nextWorkerId += 1
+      kvService ! PutKV(MASTER_GROUP, WORKER_ID, nextWorkerId)
+      val workerHostname = ActorUtil.getHostname(sender())
+      LOG.info(s"Register new from $workerHostname ....")
+      workerId
+    }
+
+    def registerWorker(id: WorkerId) = {
+      Master.this.context.watch(sender())
+      scheduler.forward(WorkerRegistered(id, MasterInfo(self, birth)))(Master.this.context)
+      workers += (sender() -> id)
+      val workerHostname = ActorUtil.getHostname(sender())
+      LOG.info(s"Register Worker with id $id from $workerHostname ....")
+    }
   }
 
   def receive: Receive = null
@@ -155,21 +176,21 @@ private[cluster] class Master extends Actor with Stash {
     case message: AkkaMultitierMessage =>
       workerConnectionListener process (sender, message)
 
-    case RegisterNewWorker =>
-      val workerId = WorkerId(nextWorkerId, System.currentTimeMillis())
-      nextWorkerId += 1
-      kvService ! PutKV(MASTER_GROUP, WORKER_ID, nextWorkerId)
-      val workerHostname = ActorUtil.getHostname(sender())
-      LOG.info(s"Register new from $workerHostname ....")
-      self forward RegisterWorker(workerId)
-
-    case RegisterWorker(id) =>
-      context.watch(sender())
-      sender ! WorkerRegistered(id, MasterInfo(self, birth))
-      scheduler forward WorkerRegistered(id, MasterInfo(self, birth))
-      workers += (sender() -> id)
-      val workerHostname = ActorUtil.getHostname(sender())
-      LOG.info(s"Register Worker with id $id from $workerHostname ....")
+//!    case RegisterNewWorker =>
+//!      val workerId = WorkerId(nextWorkerId, System.currentTimeMillis())
+//!      nextWorkerId += 1
+//!      kvService ! PutKV(MASTER_GROUP, WORKER_ID, nextWorkerId)
+//!      val workerHostname = ActorUtil.getHostname(sender())
+//!      LOG.info(s"Register new from $workerHostname ....")
+//!      self forward RegisterWorker(workerId)
+//!
+//!    case RegisterWorker(id) =>
+//!      context.watch(sender())
+//!      sender ! WorkerRegistered(id, MasterInfo(self, birth))
+//!      scheduler forward WorkerRegistered(id, MasterInfo(self, birth))
+//!      workers += (sender() -> id)
+//!      val workerHostname = ActorUtil.getHostname(sender())
+//!      LOG.info(s"Register Worker with id $id from $workerHostname ....")
     case resourceUpdate: ResourceUpdate =>
       scheduler forward resourceUpdate
   }

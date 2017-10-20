@@ -18,6 +18,7 @@
 
 package org.apache.gearpump.cluster.worker
 
+import retier.util.Notifier
 import org.apache.gearpump.multitier._
 import org.apache.gearpump.cluster.Multitier
 
@@ -84,12 +85,47 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
 
   masterConnectionRequestor newConnection masterProxy
 
+  private val registerNewWorker = Notifier[Unit]
+
+  private val registerWorker = Notifier[WorkerId]
+
+  private val connected = Promise[Unit]
+
+  private var timeoutTicker = Option.empty[Cancellable]
+
   private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
 
   retier.multitier setup new multitier.Worker {
     def connect = request[multitier.Master] { masterConnectionRequestor }
 
     override def context = retier.contexts.Immediate.global
+
+    val registerNewWorker = Worker.this.registerNewWorker.notification
+
+    val registerWorker = Worker.this.registerWorker.notification
+
+    Worker.this.connected completeWith connected.future
+
+    def workerRegistered(id: WorkerId, masterInfo: MasterInfo) = {
+      Worker.this.id = id
+
+      // Adds the flag check, so that we don't re-initialize the metrics when worker re-register
+      // itself.
+      if (!metricsInitialized) {
+        initializeMetrics()
+        metricsInitialized = true
+      }
+
+      Worker.this.masterInfo = masterInfo
+      timeoutTicker foreach { _.cancel() }
+      Worker.this.context.watch(masterInfo.master)
+      LOG = LogUtil.getLogger(getClass, worker = id)
+      LOG.info(s"Worker is registered. " +
+        s"actor path: ${ActorUtil.getFullPath(Worker.this.context.system, self.path)} ....")
+      sendMsgWithTimeOutCallBack(masterInfo.master, ResourceUpdate(self, id, resource),
+        resourceUpdateTimeoutMs, updateResourceTimeOut())
+      Worker.this.context.become(service)
+    }
   }
 
   val metricsEnabled = systemConfig.getBoolean(GEARPUMP_METRIC_ENABLED)
@@ -145,26 +181,26 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
     case message: AkkaMultitierMessage =>
       masterConnectionRequestor process message
 
-    // If master get disconnected, the WorkerRegistered may be triggered multiple times.
-    case WorkerRegistered(id, masterInfo) =>
-      this.id = id
-
-      // Adds the flag check, so that we don't re-initialize the metrics when worker re-register
-      // itself.
-      if (!metricsInitialized) {
-        initializeMetrics()
-        metricsInitialized = true
-      }
-
-      this.masterInfo = masterInfo
-      timeoutTicker.cancel()
-      context.watch(masterInfo.master)
-      this.LOG = LogUtil.getLogger(getClass, worker = id)
-      LOG.info(s"Worker is registered. " +
-        s"actor path: ${ActorUtil.getFullPath(context.system, self.path)} ....")
-      sendMsgWithTimeOutCallBack(masterInfo.master, ResourceUpdate(self, id, resource),
-        resourceUpdateTimeoutMs, updateResourceTimeOut())
-      context.become(service)
+//!    // If master get disconnected, the WorkerRegistered may be triggered multiple times.
+//!    case WorkerRegistered(id, masterInfo) =>
+//!      this.id = id
+//!
+//!      // Adds the flag check, so that we don't re-initialize the metrics when worker re-register
+//!      // itself.
+//!      if (!metricsInitialized) {
+//!        initializeMetrics()
+//!        metricsInitialized = true
+//!      }
+//!
+//!      this.masterInfo = masterInfo
+//!      timeoutTicker.cancel()
+//!      context.watch(masterInfo.master)
+//!      this.LOG = LogUtil.getLogger(getClass, worker = id)
+//!      LOG.info(s"Worker is registered. " +
+//!        s"actor path: ${ActorUtil.getFullPath(context.system, self.path)} ....")
+//!      sendMsgWithTimeOutCallBack(masterInfo.master, ResourceUpdate(self, id, resource),
+//!        resourceUpdateTimeoutMs, updateResourceTimeOut())
+//!      context.become(service)
   }
 
   private def updateResourceTimeOut(): Unit = {
@@ -269,7 +305,8 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
     repeatActionUtil(
       seconds = timeOutSeconds,
       action = () => {
-        masterProxy ! RegisterWorker(workerId)
+        import context.dispatcher
+        connected.future foreach { _ => registerWorker(workerId) }
       },
       onTimeout = () => {
         LOG.error(s"Failed to register the worker $workerId after retrying for $timeOutSeconds " +
@@ -284,7 +321,7 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
         // Parent master is down, no point to keep worker anymore. Let's make suicide to free
         // resources
         LOG.info(s"Master cannot be contacted, find a new master ...")
-        context.become(waitForMasterConfirm(retryRegisterWorker(id, timeOutSeconds = 30)))
+        timeoutTicker = Some(retryRegisterWorker(id, timeOutSeconds = 30))
       } else if (ActorUtil.isChildActorPath(self, actor)) {
         // One executor is down,
         LOG.info(s"Executor is down ${getExecutorName(actor)}")
@@ -316,8 +353,8 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
     LOG.info(s"RegisterNewWorker")
     totalSlots = systemConfig.getInt(GEARPUMP_WORKER_SLOTS)
     this.resource = Resource(totalSlots)
-    masterProxy ! RegisterNewWorker
-    context.become(waitForMasterConfirm(registerTimeoutTicker(seconds = 30)))
+    connected.future foreach { _ => registerNewWorker() }
+    timeoutTicker = Some(registerTimeoutTicker(seconds = 30))
   }
 
   private def registerTimeoutTicker(seconds: Int): Cancellable = {

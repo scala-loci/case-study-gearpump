@@ -19,31 +19,53 @@
 package org.apache.gearpump.cluster
 
 import retier._
+import org.apache.gearpump.multitier._
+import retier.util.Notification
+
 import akka.actor._
+import scala.concurrent.Promise
+import org.apache.gearpump.cluster.master.Master.MasterInfo
+import org.apache.gearpump.cluster.worker.WorkerId
 
 @multitier
 class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
   trait Master extends Peer {
     type Connection <: Multiple[Worker]
+    val self: ActorRef
+    val birth: Long
+    def registerNewWorker(): WorkerId
+    def registerWorker(workerId: WorkerId): Unit
   }
 
   trait Worker extends Peer {
     type Connection <: Single[Master]
-  }
-
-  placed[Master] { implicit! =>
-    println("Master started")
-
-    remote[Worker].joined += { _ =>
-      println("Worker joined")
-    }
+    def workerRegistered(workerId: WorkerId, masterInfo: MasterInfo): Unit
+    val registerNewWorker: Notification[Unit]
+    val registerWorker: Notification[WorkerId]
+    val connected = Promise[Unit]
   }
 
   placed[Worker] { implicit! =>
-    println("Worker started")
+    peer.registerNewWorker += { _ =>
+      remote[Master].issued { implicit! => worker: Remote[Worker] =>
+        registerWorker(peer.registerNewWorker(), worker)
+      }
+    }
 
-    remote[Master].joined += { _ =>
-      println("Master joined")
+    peer.registerWorker += { workerId =>
+      remote[Master].issued.capture(workerId) { implicit! => worker: Remote[Worker] =>
+        registerWorker(workerId, worker)
+      }
+    }
+
+    peer.connected success (())
+  }
+
+  def registerWorker(workerId: WorkerId, worker: Remote[Worker]) = placed[Master].local { implicit! =>
+    peer.registerWorker(workerId)
+    val masterInfo = MasterInfo(peer.self, peer.birth)
+    remote.on(worker).capture(workerId, masterInfo) { implicit! =>
+      peer.workerRegistered(workerId, masterInfo)
     }
   }
 }
