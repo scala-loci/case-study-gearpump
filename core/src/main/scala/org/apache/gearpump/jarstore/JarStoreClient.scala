@@ -38,7 +38,7 @@ class JarStoreClient(config: Config, system: ActorSystem) {
   private implicit val timeout = Constants.FUTURE_TIMEOUT
   private implicit def dispatcher: ExecutionContext = system.dispatcher
 
-  private val master: ActorRef = {
+  val master: ActorRef = {
     val masters = config.getStringList(Constants.GEARPUMP_CLUSTER_MASTERS)
       .asScala.flatMap(Util.parseHostList)
     system.actorOf(MasterProxy.props(masters), s"masterproxy${Util.randInt()}")

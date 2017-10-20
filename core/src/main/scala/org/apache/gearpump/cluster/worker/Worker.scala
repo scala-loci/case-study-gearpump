@@ -59,7 +59,7 @@ import scala.util.{Failure, Success, Try}
  *
  * @param masterProxy masterProxy is used to resolve the master
  */
-private[cluster] class Worker(masterProxy: ActorRef) extends Actor with TimeOutScheduler {
+private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with TimeOutScheduler {
   private val systemConfig: Config = context.system.settings.config
 
   private val address = ActorUtil.getFullPath(context.system, self.path)
@@ -72,6 +72,8 @@ private[cluster] class Worker(masterProxy: ActorRef) extends Actor with TimeOutS
   private var executorNameToActor = Map.empty[String, ActorRef]
   private val executorProcLauncher: ExecutorProcessLauncher = getExecutorProcLauncher()
   private val jarStoreClient = new JarStoreClient(systemConfig, context.system)
+
+  val masterProxy = jarStoreClient.master
 
   private val ioPool = ExecutionContext.fromExecutorService(Executors.newCachedThreadPool())
   private val resourceUpdateTimeoutMs = 30000 // Milliseconds
