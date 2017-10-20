@@ -18,6 +18,9 @@
 
 package org.apache.gearpump.cluster.worker
 
+import org.apache.gearpump.multitier._
+import org.apache.gearpump.cluster.Multitier
+
 import java.io.File
 import java.lang.management.ManagementFactory
 import java.net.URL
@@ -75,10 +78,25 @@ private[cluster] class Worker(masterProxy: ActorRef) extends Actor with TimeOutS
 
   private var totalSlots: Int = 0
 
+  private val masterConnectionRequestor = new AkkaConnectionRequestor
+
+  masterConnectionRequestor newConnection masterProxy
+
+  private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
+
+  retier.multitier setup new multitier.Worker {
+    def connect = request[multitier.Master] { masterConnectionRequestor }
+
+    override def context = retier.contexts.Immediate.global
+  }
+
   val metricsEnabled = systemConfig.getBoolean(GEARPUMP_METRIC_ENABLED)
   var historyMetricsService: Option[ActorRef] = None
 
-  override def receive: Receive = null
+  override def receive: Receive = {
+    case message: AkkaMultitierMessage =>
+      masterConnectionRequestor process message
+  }
   var LOG: Logger = LogUtil.getLogger(getClass)
 
   def service: Receive =
@@ -122,6 +140,8 @@ private[cluster] class Worker(masterProxy: ActorRef) extends Actor with TimeOutS
   }
 
   def waitForMasterConfirm(timeoutTicker: Cancellable): Receive = {
+    case message: AkkaMultitierMessage =>
+      masterConnectionRequestor process message
 
     // If master get disconnected, the WorkerRegistered may be triggered multiple times.
     case WorkerRegistered(id, masterInfo) =>
@@ -150,6 +170,8 @@ private[cluster] class Worker(masterProxy: ActorRef) extends Actor with TimeOutS
   }
 
   def appMasterMsgHandler: Receive = {
+    case message: AkkaMultitierMessage =>
+      masterConnectionRequestor process message
     case shutdown@ShutdownExecutor(appId, executorId, reason: String) =>
       val actorName = ActorUtil.actorNameForExecutor(appId, executorId)
       val executorToStop = executorNameToActor.get(actorName)

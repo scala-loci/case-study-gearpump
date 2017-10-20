@@ -18,6 +18,9 @@
 
 package org.apache.gearpump.cluster.master
 
+import org.apache.gearpump.multitier._
+import org.apache.gearpump.cluster.Multitier
+
 import java.lang.management.ManagementFactory
 import org.apache.gearpump.cluster.worker.WorkerId
 import org.apache.gearpump.jarstore.JarStoreServer
@@ -70,6 +73,16 @@ private[cluster] class Master extends Actor with Stash {
 
   private var nextWorkerId = 0
 
+  private val workerConnectionListener = new AkkaConnectionListener
+
+  private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
+
+  retier.multitier setup new multitier.Master {
+    def connect = listen[multitier.Worker] { workerConnectionListener }
+
+    override def context = retier.contexts.Immediate.global
+  }
+
   def receive: Receive = null
 
   // Register jvm metrics
@@ -109,6 +122,8 @@ private[cluster] class Master extends Actor with Stash {
   context.become(waitForNextWorkerId)
 
   def waitForNextWorkerId: Receive = {
+    case message: AkkaMultitierMessage =>
+      workerConnectionListener process (sender, message)
     case GetKVSuccess(_, result) =>
       if (result != null) {
         this.nextWorkerId = result.asInstanceOf[Int]
@@ -137,6 +152,9 @@ private[cluster] class Master extends Actor with Stash {
     ActorUtil.defaultMsgHandler(self)
 
   def workerMsgHandler: Receive = {
+    case message: AkkaMultitierMessage =>
+      workerConnectionListener process (sender, message)
+
     case RegisterNewWorker =>
       val workerId = WorkerId(nextWorkerId, System.currentTimeMillis())
       nextWorkerId += 1
