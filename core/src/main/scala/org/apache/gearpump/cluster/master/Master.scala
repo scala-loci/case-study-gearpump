@@ -73,18 +73,23 @@ private[cluster] class Master extends Actor with Stash {
 
   private var nextWorkerId = 0
 
-  private val workerConnectionListener = new AkkaConnectionListener
+  private val masterProxyConnectionListener = new AkkaConnectionListener
+
+  private val workerConnectionRequestor = new AkkaConnectionRequestorFactory
 
   private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
 
   retier.multitier setup new multitier.Master {
-    def connect = listen[multitier.Worker] { workerConnectionListener }
+    def connect = listen[multitier.MasterProxy] { masterProxyConnectionListener }
 
     override def context = retier.contexts.Immediate.global
 
-    val self = Master.this.self
+    implicit val self = Master.this.self
 
     val birth = Master.this.birth
+
+    def connectWorker(worker: ActorRef) =
+      workerConnectionRequestor newConnection worker
 
     def registerNewWorker() = {
       val workerId = WorkerId(nextWorkerId, System.currentTimeMillis())
@@ -144,7 +149,10 @@ private[cluster] class Master extends Actor with Stash {
 
   def waitForNextWorkerId: Receive = {
     case message: AkkaMultitierMessage =>
-      workerConnectionListener process (sender, message)
+      if (sender.path.name contains "proxy")
+        masterProxyConnectionListener process (sender, message)
+      else
+        workerConnectionRequestor process (sender, message)
     case GetKVSuccess(_, result) =>
       if (result != null) {
         this.nextWorkerId = result.asInstanceOf[Int]
@@ -174,7 +182,10 @@ private[cluster] class Master extends Actor with Stash {
 
   def workerMsgHandler: Receive = {
     case message: AkkaMultitierMessage =>
-      workerConnectionListener process (sender, message)
+      if (sender.path.name contains "proxy")
+        masterProxyConnectionListener process (sender, message)
+      else
+        workerConnectionRequestor process (sender, message)
 
 //!    case RegisterNewWorker =>
 //!      val workerId = WorkerId(nextWorkerId, System.currentTimeMillis())

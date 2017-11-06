@@ -18,6 +18,7 @@
 
 package org.apache.gearpump.cluster.worker
 
+import retier.Runtime
 import retier.util.Notifier
 import org.apache.gearpump.multitier._
 import org.apache.gearpump.cluster.Multitier
@@ -81,59 +82,94 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
 
   private var totalSlots: Int = 0
 
-  private val masterConnectionRequestor = new AkkaConnectionRequestor
+  private var masterConnectionRequestor = new AkkaConnectionRequestor
 
-  masterConnectionRequestor newConnection masterProxy
-
-  private val registerNewWorker = Notifier[Unit]
+  private var masterProxyConnectionRequestor = new AkkaConnectionRequestor
 
   private val registerWorker = Notifier[WorkerId]
 
-  private val connected = Promise[Unit]
+  private var connectMaster = Notifier[AkkaConnectionRequestor]
+
+  private var masterConnected = false
 
   private var timeoutTicker = Option.empty[Cancellable]
 
   private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
 
-  retier.multitier setup new multitier.Worker {
-    def connect = request[multitier.Master] { masterConnectionRequestor }
+  var multitierRuntime: Runtime = _
 
-    override def context = retier.contexts.Immediate.global
+  def terminateMultitier() =
+    if (multitierRuntime != null) {
+      multitierRuntime.terminate
+      multitierRuntime = null
+    }
 
-    val registerNewWorker = Worker.this.registerNewWorker.notification
+  def setupMultitier(): Unit = {
+    masterProxyConnectionRequestor = new AkkaConnectionRequestor
 
-    val registerWorker = Worker.this.registerWorker.notification
+    masterProxyConnectionRequestor newConnection masterProxy
 
-    Worker.this.connected completeWith connected.future
+    terminateMultitier()
 
-    def workerRegistered(id: WorkerId, masterInfo: MasterInfo) = {
-      Worker.this.id = id
+    multitierRuntime = retier.multitier setup new multitier.Worker {
+      def connect =
+        request[multitier.MasterProxy] { masterProxyConnectionRequestor }
 
-      // Adds the flag check, so that we don't re-initialize the metrics when worker re-register
-      // itself.
-      if (!metricsInitialized) {
-        initializeMetrics()
-        metricsInitialized = true
+      override def context = retier.contexts.Immediate.global
+
+      implicit val self = Worker.this.self
+
+      val registerWorker = Worker.this.registerWorker.notification
+
+      val connectMaster = Worker.this.connectMaster.notification
+
+      def started() =
+        masterProxyConnecting.cancel()
+
+      def masterConnected(connected: Boolean) =
+        Worker.this.masterConnected = connected
+
+      def workerRegistered(id: WorkerId, masterInfo: MasterInfo) = {
+        Worker.this.id = id
+
+        // Adds the flag check, so that we don't re-initialize the metrics when worker re-register
+        // itself.
+        if (!metricsInitialized) {
+          initializeMetrics()
+          metricsInitialized = true
+        }
+
+        Worker.this.masterInfo = masterInfo
+        timeoutTicker foreach { _.cancel() }
+        Worker.this.context.watch(masterInfo.master)
+        LOG = LogUtil.getLogger(getClass, worker = id)
+        LOG.info(s"Worker is registered. " +
+          s"actor path: ${ActorUtil.getFullPath(Worker.this.context.system, self.path)} ....")
+        sendMsgWithTimeOutCallBack(masterInfo.master, ResourceUpdate(self, id, resource),
+          resourceUpdateTimeoutMs, updateResourceTimeOut())
+        Worker.this.context.become(service)
       }
-
-      Worker.this.masterInfo = masterInfo
-      timeoutTicker foreach { _.cancel() }
-      Worker.this.context.watch(masterInfo.master)
-      LOG = LogUtil.getLogger(getClass, worker = id)
-      LOG.info(s"Worker is registered. " +
-        s"actor path: ${ActorUtil.getFullPath(Worker.this.context.system, self.path)} ....")
-      sendMsgWithTimeOutCallBack(masterInfo.master, ResourceUpdate(self, id, resource),
-        resourceUpdateTimeoutMs, updateResourceTimeOut())
-      Worker.this.context.become(service)
     }
   }
+
+  import context.dispatcher
+  val masterProxyConnecting = repeatActionUtil(30, () => setupMultitier(), () => Unit)
 
   val metricsEnabled = systemConfig.getBoolean(GEARPUMP_METRIC_ENABLED)
   var historyMetricsService: Option[ActorRef] = None
 
   override def receive: Receive = {
     case message: AkkaMultitierMessage =>
-      masterConnectionRequestor process message
+      if (sender == masterProxy)
+        masterProxyConnectionRequestor process message
+      else if (!masterConnected) {
+        masterConnectionRequestor = new AkkaConnectionRequestor
+        masterConnectionRequestor newConnection sender
+        connectMaster(masterConnectionRequestor)
+        masterConnected = true
+      }
+      else
+        masterConnectionRequestor process message
   }
   var LOG: Logger = LogUtil.getLogger(getClass)
 
@@ -179,7 +215,16 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
 
   def waitForMasterConfirm(timeoutTicker: Cancellable): Receive = {
     case message: AkkaMultitierMessage =>
-      masterConnectionRequestor process message
+      if (sender == masterProxy)
+        masterProxyConnectionRequestor process message
+      else if (!masterConnected) {
+        masterConnectionRequestor = new AkkaConnectionRequestor
+        masterConnectionRequestor newConnection sender
+        connectMaster(masterConnectionRequestor)
+        masterConnected = true
+      }
+      else
+        masterConnectionRequestor process message
 
 //!    // If master get disconnected, the WorkerRegistered may be triggered multiple times.
 //!    case WorkerRegistered(id, masterInfo) =>
@@ -209,7 +254,16 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
 
   def appMasterMsgHandler: Receive = {
     case message: AkkaMultitierMessage =>
-      masterConnectionRequestor process message
+      if (sender == masterProxy)
+        masterProxyConnectionRequestor process message
+      else if (!masterConnected) {
+        masterConnectionRequestor = new AkkaConnectionRequestor
+        masterConnectionRequestor newConnection sender
+        connectMaster(masterConnectionRequestor)
+        masterConnected = true
+      }
+      else
+        masterConnectionRequestor process message
     case shutdown@ShutdownExecutor(appId, executorId, reason: String) =>
       val actorName = ActorUtil.actorNameForExecutor(appId, executorId)
       val executorToStop = executorNameToActor.get(actorName)
@@ -305,8 +359,7 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
     repeatActionUtil(
       seconds = timeOutSeconds,
       action = () => {
-        import context.dispatcher
-        connected.future foreach { _ => registerWorker(workerId) }
+        registerWorker(workerId)
       },
       onTimeout = () => {
         LOG.error(s"Failed to register the worker $workerId after retrying for $timeOutSeconds " +
@@ -348,12 +401,10 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
       .asInstanceOf[ExecutorProcessLauncher]
   }
 
-  import context.dispatcher
   override def preStart(): Unit = {
     LOG.info(s"RegisterNewWorker")
     totalSlots = systemConfig.getInt(GEARPUMP_WORKER_SLOTS)
     this.resource = Resource(totalSlots)
-    connected.future foreach { _ => registerNewWorker() }
     timeoutTicker = Some(registerTimeoutTicker(seconds = 30))
   }
 

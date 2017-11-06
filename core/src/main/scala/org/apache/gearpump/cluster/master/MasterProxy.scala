@@ -18,6 +18,10 @@
 
 package org.apache.gearpump.cluster.master
 
+import retier.util.Notifier
+import org.apache.gearpump.multitier._
+import org.apache.gearpump.cluster.Multitier
+
 import scala.concurrent.duration.FiniteDuration
 
 import akka.actor._
@@ -41,20 +45,43 @@ class MasterProxy(masters: Iterable[ActorPath], timeout: FiniteDuration)
     context.actorSelection(url)
   }
 
-  var watchers: List[ActorRef] = List.empty[ActorRef]
+  private val workerConnectionListener = new AkkaConnectionListener
 
-  import context.dispatcher
+  private val masterConnectionRequestor = new AkkaConnectionRequestorFactory
 
-  def findMaster(): Cancellable = {
-    repeatActionUtil(timeout) {
-      contacts foreach { contact =>
-        LOG.info(s"sending identity to $contact")
-        contact ! Identify(None)
+  private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
+
+  private val connectMaster = Notifier[AkkaConnectionRequestor]
+
+  private var master = Option.empty[ActorRef]
+
+  retier.multitier setup new multitier.MasterProxy {
+    def connect = listen[multitier.Worker] { workerConnectionListener }
+
+    override def context = retier.contexts.Immediate.global
+
+    val connectMaster = MasterProxy.this.connectMaster.notification
+
+    def findMaster() =
+      repeatActionUtil(timeout) {
+        contacts foreach { contact =>
+          LOG.info(s"sending identity to $contact")
+          contact ! Identify(None)
+        }
+      }
+
+    def masterConnected(master: Option[ActorRef]) = {
+      MasterProxy.this.master = master
+      if (master.nonEmpty) {
+        watchers.foreach(_ ! MasterRestarted)
+        unstashAll()
       }
     }
   }
 
-  context.become(establishing(findMaster()))
+  var watchers: List[ActorRef] = List.empty[ActorRef]
+
+  import context.dispatcher
 
   LOG.info("Master Proxy is started...")
 
@@ -64,39 +91,66 @@ class MasterProxy(masters: Iterable[ActorPath], timeout: FiniteDuration)
   }
 
   override def receive: Receive = {
-    case _ =>
-  }
-
-  def establishing(findMaster: Cancellable): Actor.Receive = {
+    case message: AkkaMultitierMessage if sender.path.name contains "master" =>
+      masterConnectionRequestor process (sender, message)
+    case message: AkkaMultitierMessage if master.nonEmpty =>
+      workerConnectionListener process (sender, message)
     case ActorIdentity(_, Some(receptionist)) =>
-      context watch receptionist
-      LOG.info("Connected to [{}]", receptionist.path)
-      context.watch(receptionist)
-
-      watchers.foreach(_ ! MasterRestarted)
-      unstashAll()
-      findMaster.cancel()
-      context.become(active(receptionist) orElse messageHandler(receptionist))
+      connectMaster(masterConnectionRequestor newConnection receptionist)
+      if (master.isEmpty) {
+        master = Some(receptionist)
+      }
     case ActorIdentity(_, None) => // ok, use another instead
-    case msg =>
-      LOG.info(s"Stashing ${msg.getClass.getSimpleName}")
-      stash()
-  }
-
-  def active(receptionist: ActorRef): Actor.Receive = {
-    case Terminated(receptionist) =>
-      LOG.info("Lost contact with [{}], reestablishing connection", receptionist)
-      context.become(establishing(findMaster))
-    case _: ActorIdentity => // ok, from previous establish, already handled
     case WatchMaster(watcher) =>
       watchers = watchers :+ watcher
+    case msg => master match {
+      case Some(master) =>
+        LOG.debug(s"Get msg ${msg.getClass.getSimpleName}, forwarding to ${master.path}")
+        master forward msg
+      case _ =>
+        stash()
+    }
   }
 
-  def messageHandler(master: ActorRef): Receive = {
-    case msg =>
-      LOG.debug(s"Get msg ${msg.getClass.getSimpleName}, forwarding to ${master.path}")
-      master forward msg
-  }
+//!  override def receive: Receive = {
+//!    case message: AkkaMultitierMessage =>
+//!      if (sender.toString contains "Worker")
+//!        workerConnectionListener process (sender, message)
+//!      else
+//!        masterConnectionRequestor process (sender, message)
+//!    case _ =>
+//!  }
+//!
+//!  def establishing(findMaster: Cancellable): Actor.Receive = {
+//!    case ActorIdentity(_, Some(receptionist)) =>
+//!      context watch receptionist
+//!      LOG.info("Connected to [{}]", receptionist.path)
+//!      context.watch(receptionist)
+//!
+//!      watchers.foreach(_ ! MasterRestarted)
+//!      unstashAll()
+//!      findMaster.cancel()
+//!      context.become(active(receptionist) orElse messageHandler(receptionist))
+//!    case ActorIdentity(_, None) => // ok, use another instead
+//!    case msg =>
+//!      LOG.info(s"Stashing ${msg.getClass.getSimpleName}")
+//!      stash()
+//!  }
+//!
+//!  def active(receptionist: ActorRef): Actor.Receive = {
+//!    case Terminated(receptionist) =>
+//!      LOG.info("Lost contact with [{}], reestablishing connection", receptionist)
+//!      context.become(establishing(findMaster))
+//!    case _: ActorIdentity => // ok, from previous establish, already handled
+//!    case WatchMaster(watcher) =>
+//!      watchers = watchers :+ watcher
+//!  }
+//!
+//!  def messageHandler(master: ActorRef): Receive = {
+//!    case msg =>
+//!      LOG.debug(s"Get msg ${msg.getClass.getSimpleName}, forwarding to ${master.path}")
+//!      master forward msg
+//!  }
 
   def scheduler: Scheduler = context.system.scheduler
   import scala.concurrent.duration._

@@ -165,7 +165,7 @@ object BuildGearpump extends sbt.Build {
 
       libraryDependencies ++= Seq(
         "de.tuda.stg" %% "retier-core" % "0.0.1-SNAPSHOT",
-        "de.tuda.stg" %% "retier-transmitter-basic" % "0.0.1-SNAPSHOT"),
+        "de.tuda.stg" %% "retier-transmitter-rescala" % "0.0.1-SNAPSHOT"),
 
       addCompilerPlugin(
         "org.scalamacros" % "paradise" % "2.1.0" cross CrossVersion.full),

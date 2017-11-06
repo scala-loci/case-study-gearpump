@@ -65,6 +65,21 @@ class AkkaConnection(val protocol: AkkaEnpoint)(
   }
 }
 
+class AkkaConnectionRequestorFactory {
+  val requestors = mutable.Map.empty[ActorRef, AkkaConnectionRequestor]
+
+  def newConnection(actorRef: ActorRef)(
+      implicit sender: ActorRef = Actor.noSender) = {
+    val requestor = new AkkaConnectionRequestor
+    requestor newConnection actorRef
+    requestors += actorRef -> requestor
+    requestor
+  }
+
+  def process(actorRef: ActorRef, message: AkkaMultitierMessage) =
+    requestors get actorRef foreach { _ process message }
+}
+
 class AkkaConnectionRequestor extends ConnectionRequestor {
   private val promise = Promise[AkkaConnection]
 
