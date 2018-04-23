@@ -79,10 +79,10 @@ private[cluster] class Master extends Actor with Stash {
 
   private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
 
-  retier.multitier setup new multitier.Master {
+  loci.multitier setup new multitier.Master {
     def connect = listen[multitier.MasterProxy] { masterProxyConnectionListener }
 
-    override def context = retier.contexts.Immediate.global
+    override def context = loci.contexts.Immediate.global
 
     implicit val self = Master.this.self
 

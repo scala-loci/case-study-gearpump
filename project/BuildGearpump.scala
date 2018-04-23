@@ -163,9 +163,11 @@ object BuildGearpump extends sbt.Build {
     settings = commonSettings ++ myAssemblySettings ++ javadocSettings ++ coreDependencies ++
       addArtifact(Artifact("gearpump-core"), sbtassembly.AssemblyKeys.assembly) ++ Seq(
 
+      resolvers += Resolver.bintrayRepo("stg-tud", "maven"),
+
       libraryDependencies ++= Seq(
-        "de.tuda.stg" %% "retier-core" % "0.0.1-SNAPSHOT",
-        "de.tuda.stg" %% "retier-transmitter-rescala" % "0.0.1-SNAPSHOT"),
+        "de.tuda.stg" %% "scala-loci-core" % "0.1.0",
+        "de.tuda.stg" %% "scala-loci-transmitter-rescala" % "0.1.0"),
 
       addCompilerPlugin(
         "org.scalamacros" % "paradise" % "2.1.0" cross CrossVersion.full),

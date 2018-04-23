@@ -19,10 +19,10 @@
 package org.apache.gearpump.cluster
 
 import rescala._
-import retier._
-import retier.rescalaTransmitter._
+import loci._
+import loci.rescalaTransmitter._
+import loci.util.Notification
 import org.apache.gearpump.multitier._
-import retier.util.Notification
 
 import akka.actor._
 import scala.concurrent.Promise
@@ -32,7 +32,7 @@ import org.apache.gearpump.cluster.worker.WorkerId
 @multitier
 class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
   trait Master extends Peer {
-    type Connection <: Multiple[MasterProxy] with Multiple[Worker]
+    type Tie <: Multiple[MasterProxy] with Multiple[Worker]
     val self: ActorRef
     val birth: Long
     def connectWorker(worker: ActorRef): AkkaConnectionRequestor
@@ -41,7 +41,7 @@ class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
   }
 
   trait Worker extends Peer {
-    type Connection <: Single[MasterProxy] with Optional[Master]
+    type Tie <: Single[MasterProxy] with Optional[Master]
     val self: ActorRef
     val registerWorker: Notification[WorkerId]
     val connectMaster: Notification[AkkaConnectionRequestor]
@@ -51,7 +51,7 @@ class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
   }
 
   trait MasterProxy extends Peer {
-    type Connection <: Multiple[Master] with Multiple[Worker]
+    type Tie <: Multiple[Master] with Multiple[Worker]
     val connectMaster: Notification[AkkaConnectionRequestor]
     def findMaster(): Unit
     def masterConnected(master: Option[ActorRef]): Unit
@@ -66,14 +66,14 @@ class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
 
   val registerNew = placed[Worker] { implicit! => Evt[ActorRef] }
 
-  val registerNewWorker = placed[MasterProxy].issued { implicit! => master: Remote[Master] =>
-    registerNew.asLocalSeq filter { _ =>
+  val registerNewWorker = placed[MasterProxy].sbj { implicit! => master: Remote[Master] =>
+    registerNew.asLocalFromAllSeq filter { _ =>
       Some(master) == remote[Master].connected.now.headOption
     } map { case (_, ref) => ref }
   }
 
   placed[Master] { implicit! =>
-    registerNewWorker.asLocalSeq observe { case (_, ref) =>
+    registerNewWorker.asLocalFromAllSeq observe { case (_, ref) =>
       remote[Worker] connect peer.connectWorker(ref)
     }
 
@@ -89,7 +89,7 @@ class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
 
   placed[Worker] { implicit! =>
     peer.registerWorker += { workerId =>
-      remote[Master].issued.capture(workerId) { implicit! => worker: Remote[Worker] =>
+      remote[Master].sbj.capture(workerId) { implicit! => worker: Remote[Worker] =>
         registerWorker(workerId, worker)
       }
     }

@@ -18,8 +18,8 @@
 
 package org.apache.gearpump.cluster.worker
 
-import retier.Runtime
-import retier.util.Notifier
+import loci.Runtime
+import loci.util.Notifier
 import org.apache.gearpump.multitier._
 import org.apache.gearpump.cluster.Multitier
 
@@ -111,11 +111,11 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
 
     terminateMultitier()
 
-    multitierRuntime = retier.multitier setup new multitier.Worker {
+    multitierRuntime = loci.multitier setup new multitier.Worker {
       def connect =
         request[multitier.MasterProxy] { masterProxyConnectionRequestor }
 
-      override def context = retier.contexts.Immediate.global
+      override def context = loci.contexts.Immediate.global
 
       implicit val self = Worker.this.self
 

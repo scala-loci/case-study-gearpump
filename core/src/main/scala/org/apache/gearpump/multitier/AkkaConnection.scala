@@ -18,8 +18,8 @@
 
 package org.apache.gearpump.multitier
 
-import retier.network._
-import retier.util.Notifier
+import loci.network._
+import loci.util.Notifier
 
 import akka.actor.{Actor, ActorRef}
 import scala.collection.mutable

@@ -18,7 +18,7 @@
 
 package org.apache.gearpump.cluster.master
 
-import retier.util.Notifier
+import loci.util.Notifier
 import org.apache.gearpump.multitier._
 import org.apache.gearpump.cluster.Multitier
 
@@ -55,10 +55,10 @@ class MasterProxy(masters: Iterable[ActorPath], timeout: FiniteDuration)
 
   private var master = Option.empty[ActorRef]
 
-  retier.multitier setup new multitier.MasterProxy {
+  loci.multitier setup new multitier.MasterProxy {
     def connect = listen[multitier.Worker] { workerConnectionListener }
 
-    override def context = retier.contexts.Immediate.global
+    override def context = loci.contexts.Immediate.global
 
     val connectMaster = MasterProxy.this.connectMaster.notification
 

@@ -18,8 +18,8 @@
 
 package org.apache.gearpump
 
-import retier._
-import retier.transmission.{PullBasedTransmittable, RemoteRef, Serializable}
+import loci._
+import loci.transmission.{PullBasedTransmittable, RemoteRef, Serializable}
 
 import akka.actor.ExtendedActorSystem
 import akka.serialization.JavaSerializer
