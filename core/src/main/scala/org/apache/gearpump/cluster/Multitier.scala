@@ -20,8 +20,7 @@ package org.apache.gearpump.cluster
 
 import rescala._
 import loci._
-import loci.rescalaTransmitter._
-import loci.util.Notification
+import loci.transmitter.rescala._
 import org.apache.gearpump.multitier._
 
 import akka.actor._
@@ -35,7 +34,7 @@ class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
     type Tie <: Multiple[MasterProxy] with Multiple[Worker]
     val self: ActorRef
     val birth: Long
-    def connectWorker(worker: ActorRef): AkkaConnectionRequestor
+    def connectWorker(worker: ActorRef): AkkaConnector
     def registerNewWorker(): WorkerId
     def registerWorker(workerId: WorkerId): Unit
   }
@@ -44,7 +43,7 @@ class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
     type Tie <: Single[MasterProxy] with Optional[Master]
     val self: ActorRef
     val registerWorker: Notification[WorkerId]
-    val connectMaster: Notification[AkkaConnectionRequestor]
+    val connectMaster: Notification[AkkaConnector]
     def started(): Unit
     def masterConnected(connected: Boolean): Unit
     def workerRegistered(workerId: WorkerId, masterInfo: MasterInfo): Unit
@@ -52,7 +51,7 @@ class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
 
   trait MasterProxy extends Peer {
     type Tie <: Multiple[Master] with Multiple[Worker]
-    val connectMaster: Notification[AkkaConnectionRequestor]
+    val connectMaster: Notification[AkkaConnector]
     def findMaster(): Unit
     def masterConnected(master: Option[ActorRef]): Unit
   }
@@ -67,9 +66,9 @@ class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
   val registerNew = placed[Worker] { implicit! => Evt[ActorRef] }
 
   val registerNewWorker = placed[MasterProxy].sbj { implicit! => master: Remote[Master] =>
-    registerNew.asLocalFromAllSeq filter { _ =>
-      Some(master) == remote[Master].connected.now.headOption
-    } map { case (_, ref) => ref }
+    (registerNew.asLocalFromAllSeq 
+      map { case (_, ref) => ref -> remote[Master].connected().headOption }
+      collect { case (ref, connected) if connected contains master => ref })
   }
 
   placed[Master] { implicit! =>
@@ -88,7 +87,7 @@ class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
   }
 
   placed[Worker] { implicit! =>
-    peer.registerWorker += { workerId =>
+    peer.registerWorker notify { workerId =>
       remote[Master].sbj.capture(workerId) { implicit! => worker: Remote[Worker] =>
         registerWorker(workerId, worker)
       }
@@ -96,11 +95,11 @@ class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
 
     remote[Master].connected observe { connected => peer.masterConnected(connected.nonEmpty) }
 
-    peer.connectMaster += { remote[Master] connect _ }
+    peer.connectMaster notify { remote[Master] connect _ }
   }
 
   placed[MasterProxy] { implicit! =>
-    peer.connectMaster += { remote[Master] connect _ }
+    peer.connectMaster notify { remote[Master] connect _ }
 
     Signal { remote[Master].connected().headOption }.changed map {
       _ map { _.protocol.asInstanceOf[AkkaEnpoint].actorRef }

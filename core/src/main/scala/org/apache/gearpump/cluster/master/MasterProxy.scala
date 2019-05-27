@@ -18,7 +18,7 @@
 
 package org.apache.gearpump.cluster.master
 
-import loci.util.Notifier
+import loci._
 import org.apache.gearpump.multitier._
 import org.apache.gearpump.cluster.Multitier
 
@@ -45,18 +45,18 @@ class MasterProxy(masters: Iterable[ActorPath], timeout: FiniteDuration)
     context.actorSelection(url)
   }
 
-  private val workerConnectionListener = new AkkaConnectionListener
+  private val workerListener = new AkkaListener
 
-  private val masterConnectionRequestor = new AkkaConnectionRequestorFactory
+  private val masterConnector = new AkkaConnectorFactory
 
   private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
 
-  private val connectMaster = Notifier[AkkaConnectionRequestor]
+  private val connectMaster = Notifier[AkkaConnector]
 
   private var master = Option.empty[ActorRef]
 
   loci.multitier setup new multitier.MasterProxy {
-    def connect = listen[multitier.Worker] { workerConnectionListener }
+    def connect = listen[multitier.Worker] { workerListener }
 
     override def context = loci.contexts.Immediate.global
 
@@ -92,11 +92,11 @@ class MasterProxy(masters: Iterable[ActorPath], timeout: FiniteDuration)
 
   override def receive: Receive = {
     case message: AkkaMultitierMessage if sender.path.name contains "master" =>
-      masterConnectionRequestor process (sender, message)
+      masterConnector process (sender, message)
     case message: AkkaMultitierMessage if master.nonEmpty =>
-      workerConnectionListener process (sender, message)
+      workerListener process (sender, message)
     case ActorIdentity(_, Some(receptionist)) =>
-      connectMaster(masterConnectionRequestor newConnection receptionist)
+      connectMaster(masterConnector newConnection receptionist)
       if (master.isEmpty) {
         master = Some(receptionist)
       }
@@ -115,9 +115,9 @@ class MasterProxy(masters: Iterable[ActorPath], timeout: FiniteDuration)
 //!  override def receive: Receive = {
 //!    case message: AkkaMultitierMessage =>
 //!      if (sender.toString contains "Worker")
-//!        workerConnectionListener process (sender, message)
+//!        workerListener process (sender, message)
 //!      else
-//!        masterConnectionRequestor process (sender, message)
+//!        masterConnector process (sender, message)
 //!    case _ =>
 //!  }
 //!

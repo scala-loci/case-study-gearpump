@@ -73,14 +73,14 @@ private[cluster] class Master extends Actor with Stash {
 
   private var nextWorkerId = 0
 
-  private val masterProxyConnectionListener = new AkkaConnectionListener
+  private val masterProxyListener = new AkkaListener
 
-  private val workerConnectionRequestor = new AkkaConnectionRequestorFactory
+  private val workerConnector = new AkkaConnectorFactory
 
   private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
 
   loci.multitier setup new multitier.Master {
-    def connect = listen[multitier.MasterProxy] { masterProxyConnectionListener }
+    def connect = listen[multitier.MasterProxy] { masterProxyListener }
 
     override def context = loci.contexts.Immediate.global
 
@@ -89,7 +89,7 @@ private[cluster] class Master extends Actor with Stash {
     val birth = Master.this.birth
 
     def connectWorker(worker: ActorRef) =
-      workerConnectionRequestor newConnection worker
+      workerConnector newConnection worker
 
     def registerNewWorker() = {
       val workerId = WorkerId(nextWorkerId, System.currentTimeMillis())
@@ -150,9 +150,9 @@ private[cluster] class Master extends Actor with Stash {
   def waitForNextWorkerId: Receive = {
     case message: AkkaMultitierMessage =>
       if (sender.path.name contains "proxy")
-        masterProxyConnectionListener process (sender, message)
+        masterProxyListener process (sender, message)
       else
-        workerConnectionRequestor process (sender, message)
+        workerConnector process (sender, message)
     case GetKVSuccess(_, result) =>
       if (result != null) {
         this.nextWorkerId = result.asInstanceOf[Int]
@@ -183,9 +183,9 @@ private[cluster] class Master extends Actor with Stash {
   def workerMsgHandler: Receive = {
     case message: AkkaMultitierMessage =>
       if (sender.path.name contains "proxy")
-        masterProxyConnectionListener process (sender, message)
+        masterProxyListener process (sender, message)
       else
-        workerConnectionRequestor process (sender, message)
+        workerConnector process (sender, message)
 
 //!    case RegisterNewWorker =>
 //!      val workerId = WorkerId(nextWorkerId, System.currentTimeMillis())

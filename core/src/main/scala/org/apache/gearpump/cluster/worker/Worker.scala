@@ -18,8 +18,7 @@
 
 package org.apache.gearpump.cluster.worker
 
-import loci.Runtime
-import loci.util.Notifier
+import loci._
 import org.apache.gearpump.multitier._
 import org.apache.gearpump.cluster.Multitier
 
@@ -82,13 +81,13 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
 
   private var totalSlots: Int = 0
 
-  private var masterConnectionRequestor = new AkkaConnectionRequestor
+  private var masterConnector = new AkkaConnector
 
-  private var masterProxyConnectionRequestor = new AkkaConnectionRequestor
+  private var masterProxyConnector = new AkkaConnector
 
   private val registerWorker = Notifier[WorkerId]
 
-  private var connectMaster = Notifier[AkkaConnectionRequestor]
+  private var connectMaster = Notifier[AkkaConnector]
 
   private var masterConnected = false
 
@@ -105,15 +104,15 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
     }
 
   def setupMultitier(): Unit = {
-    masterProxyConnectionRequestor = new AkkaConnectionRequestor
+    masterProxyConnector = new AkkaConnector
 
-    masterProxyConnectionRequestor newConnection masterProxy
+    masterProxyConnector newConnection masterProxy
 
     terminateMultitier()
 
     multitierRuntime = loci.multitier setup new multitier.Worker {
       def connect =
-        request[multitier.MasterProxy] { masterProxyConnectionRequestor }
+        connect[multitier.MasterProxy] { masterProxyConnector }
 
       override def context = loci.contexts.Immediate.global
 
@@ -161,15 +160,15 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
   override def receive: Receive = {
     case message: AkkaMultitierMessage =>
       if (sender == masterProxy)
-        masterProxyConnectionRequestor process message
+        masterProxyConnector process message
       else if (!masterConnected) {
-        masterConnectionRequestor = new AkkaConnectionRequestor
-        masterConnectionRequestor newConnection sender
-        connectMaster(masterConnectionRequestor)
+        masterConnector = new AkkaConnector
+        masterConnector newConnection sender
+        connectMaster(masterConnector)
         masterConnected = true
       }
       else
-        masterConnectionRequestor process message
+        masterConnector process message
   }
   var LOG: Logger = LogUtil.getLogger(getClass)
 
@@ -216,15 +215,15 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
   def waitForMasterConfirm(timeoutTicker: Cancellable): Receive = {
     case message: AkkaMultitierMessage =>
       if (sender == masterProxy)
-        masterProxyConnectionRequestor process message
+        masterProxyConnector process message
       else if (!masterConnected) {
-        masterConnectionRequestor = new AkkaConnectionRequestor
-        masterConnectionRequestor newConnection sender
-        connectMaster(masterConnectionRequestor)
+        masterConnector = new AkkaConnector
+        masterConnector newConnection sender
+        connectMaster(masterConnector)
         masterConnected = true
       }
       else
-        masterConnectionRequestor process message
+        masterConnector process message
 
 //!    // If master get disconnected, the WorkerRegistered may be triggered multiple times.
 //!    case WorkerRegistered(id, masterInfo) =>
@@ -255,15 +254,15 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
   def appMasterMsgHandler: Receive = {
     case message: AkkaMultitierMessage =>
       if (sender == masterProxy)
-        masterProxyConnectionRequestor process message
+        masterProxyConnector process message
       else if (!masterConnected) {
-        masterConnectionRequestor = new AkkaConnectionRequestor
-        masterConnectionRequestor newConnection sender
-        connectMaster(masterConnectionRequestor)
+        masterConnector = new AkkaConnector
+        masterConnector newConnection sender
+        connectMaster(masterConnector)
         masterConnected = true
       }
       else
-        masterConnectionRequestor process message
+        masterConnector process message
     case shutdown@ShutdownExecutor(appId, executorId, reason: String) =>
       val actorName = ActorUtil.actorNameForExecutor(appId, executorId)
       val executorToStop = executorNameToActor.get(actorName)
