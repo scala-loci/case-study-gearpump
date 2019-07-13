@@ -18,6 +18,7 @@
 
 package org.apache.gearpump.cluster.master
 
+import loci._
 import org.apache.gearpump.multitier._
 import org.apache.gearpump.cluster.Multitier
 
@@ -79,19 +80,18 @@ private[cluster] class Master extends Actor with Stash {
 
   private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
 
-  loci.multitier setup new multitier.Master {
-    def connect = listen[multitier.MasterProxy] { masterProxyListener }
-
-    override def context = loci.contexts.Immediate.global
+  loci.multitier start new Instance[multitier.Master](
+      loci.contexts.Immediate.global,
+      listen[multitier.MasterProxy] { masterProxyListener }) {
 
     implicit val self = Master.this.self
 
-    val birth = Master.this.birth
+    val masterBirth = Master.this.birth
 
-    def connectWorker(worker: ActorRef) =
+    def masterConnectWorker(worker: ActorRef) =
       workerConnector newConnection worker
 
-    def registerNewWorker() = {
+    def masterRegisterNewWorker() = {
       val workerId = WorkerId(nextWorkerId, System.currentTimeMillis())
       nextWorkerId += 1
       kvService ! PutKV(MASTER_GROUP, WORKER_ID, nextWorkerId)
@@ -100,7 +100,7 @@ private[cluster] class Master extends Actor with Stash {
       workerId
     }
 
-    def registerWorker(id: WorkerId) = {
+    def masterRegisterWorker(id: WorkerId) = {
       Master.this.context.watch(sender())
       scheduler.forward(WorkerRegistered(id, MasterInfo(self, birth)))(Master.this.context)
       workers += (sender() -> id)

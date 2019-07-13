@@ -19,20 +19,22 @@
 package org.apache.gearpump
 
 import loci._
-import loci.transmitter.{PullBasedTransmittable, RemoteRef, Serializable}
+import loci.transmitter.{IdenticallyTransmittable, Serializable}
 
-import akka.actor.ExtendedActorSystem
+import akka.actor.{ActorRef, ExtendedActorSystem}
 import akka.serialization.JavaSerializer
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
 import java.util.Base64
 import scala.reflect.ClassTag
 import scala.util.Try
 
+import org.apache.gearpump.cluster.worker.WorkerId
+import org.apache.gearpump.cluster.master.Master.MasterInfo
+
 package object multitier {
-  implicit def transmittableAny = new PullBasedTransmittable[Any, Any, Any] {
-    def send(value: Any, remote: RemoteRef) = value
-    def receive(value: Any, remote: RemoteRef) = value
-  }
+  implicit def transmittableActorRef = IdenticallyTransmittable[ActorRef]
+  implicit def transmittableWorkerId = IdenticallyTransmittable[WorkerId]
+  implicit def transmittableMasterInfo = IdenticallyTransmittable[MasterInfo]
 
   implicit def serializableAny[T: ClassTag](implicit actorSystem: ExtendedActorSystem) =
     new Serializable[T] {

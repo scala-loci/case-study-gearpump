@@ -85,17 +85,13 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
 
   private var masterProxyConnector = new AkkaConnector
 
-  private val registerWorker = Notifier[WorkerId]
-
-  private var connectMaster = Notifier[AkkaConnector]
-
-  private var masterConnected = false
-
   private var timeoutTicker = Option.empty[Cancellable]
 
   private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
 
-  var multitierRuntime: Runtime = _
+  private def multitierInstance = multitierRuntime.instance.value.get.get
+
+  private var multitierRuntime: Runtime[multitier.Worker] = _
 
   def terminateMultitier() =
     if (multitierRuntime != null) {
@@ -110,23 +106,14 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
 
     terminateMultitier()
 
-    multitierRuntime = loci.multitier setup new multitier.Worker {
-      def connect =
-        connect[multitier.MasterProxy] { masterProxyConnector }
-
-      override def context = loci.contexts.Immediate.global
+    multitierRuntime = loci.multitier start new Instance[multitier.Worker](
+        loci.contexts.Immediate.global,
+        connect[multitier.MasterProxy] { masterProxyConnector }) {
 
       implicit val self = Worker.this.self
 
-      val registerWorker = Worker.this.registerWorker.notification
-
-      val connectMaster = Worker.this.connectMaster.notification
-
-      def started() =
+      def workerStarted() =
         masterProxyConnecting.cancel()
-
-      def masterConnected(connected: Boolean) =
-        Worker.this.masterConnected = connected
 
       def workerRegistered(id: WorkerId, masterInfo: MasterInfo) = {
         Worker.this.id = id
@@ -161,11 +148,11 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
     case message: AkkaMultitierMessage =>
       if (sender == masterProxy)
         masterProxyConnector process message
-      else if (!masterConnected) {
+      else if (!(multitierInstance retrieve multitier.masterConnected)) {
         masterConnector = new AkkaConnector
         masterConnector newConnection sender
-        connectMaster(masterConnector)
-        masterConnected = true
+        multitierInstance retrieve multitier.workerConnectMaster(masterConnector)
+        multitierInstance retrieve (multitier.masterConnected = true)
       }
       else
         masterConnector process message
@@ -216,11 +203,11 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
     case message: AkkaMultitierMessage =>
       if (sender == masterProxy)
         masterProxyConnector process message
-      else if (!masterConnected) {
+      else if (!(multitierInstance retrieve multitier.masterConnected)) {
         masterConnector = new AkkaConnector
         masterConnector newConnection sender
-        connectMaster(masterConnector)
-        masterConnected = true
+        multitierInstance retrieve multitier.workerConnectMaster(masterConnector)
+        multitierInstance retrieve (multitier.masterConnected = true)
       }
       else
         masterConnector process message
@@ -255,11 +242,11 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
     case message: AkkaMultitierMessage =>
       if (sender == masterProxy)
         masterProxyConnector process message
-      else if (!masterConnected) {
+      else if (!(multitierInstance retrieve multitier.masterConnected)) {
         masterConnector = new AkkaConnector
         masterConnector newConnection sender
-        connectMaster(masterConnector)
-        masterConnected = true
+        multitierInstance retrieve multitier.workerConnectMaster(masterConnector)
+        multitierInstance retrieve (multitier.masterConnected = true)
       }
       else
         masterConnector process message
@@ -358,7 +345,7 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
     repeatActionUtil(
       seconds = timeOutSeconds,
       action = () => {
-        registerWorker(workerId)
+        multitierInstance retrieve multitier.registerWorker(workerId)
       },
       onTimeout = () => {
         LOG.error(s"Failed to register the worker $workerId after retrying for $timeOutSeconds " +

@@ -18,99 +18,95 @@
 
 package org.apache.gearpump.cluster
 
-import rescala._
 import loci._
 import loci.transmitter.rescala._
-import org.apache.gearpump.multitier._
+
+import rescala.default._
 
 import akka.actor._
 import scala.concurrent.Promise
 import org.apache.gearpump.cluster.master.Master.MasterInfo
 import org.apache.gearpump.cluster.worker.WorkerId
+import org.apache.gearpump.multitier._
 
-@multitier
-class Multitier()(implicit val actorSystem: ExtendedActorSystem) {
-  trait Master extends Peer {
-    type Tie <: Multiple[MasterProxy] with Multiple[Worker]
-    val self: ActorRef
-    val birth: Long
-    def connectWorker(worker: ActorRef): AkkaConnector
-    def registerNewWorker(): WorkerId
-    def registerWorker(workerId: WorkerId): Unit
-  }
+@multitier final class Multitier(implicit actorSystem: ExtendedActorSystem) {
+  @peer type Master <: { type Tie <: Multiple[MasterProxy] with Multiple[Worker] }
+  @peer type Worker <: { type Tie <: Single[MasterProxy] with Optional[Master] }
+  @peer type MasterProxy <: { type Tie <: Multiple[Master] with Multiple[Worker] }
 
-  trait Worker extends Peer {
-    type Tie <: Single[MasterProxy] with Optional[Master]
-    val self: ActorRef
-    val registerWorker: Notification[WorkerId]
-    val connectMaster: Notification[AkkaConnector]
-    def started(): Unit
-    def masterConnected(connected: Boolean): Unit
-    def workerRegistered(workerId: WorkerId, masterInfo: MasterInfo): Unit
-  }
+  val self: ActorRef
 
-  trait MasterProxy extends Peer {
-    type Tie <: Multiple[Master] with Multiple[Worker]
-    val connectMaster: Notification[AkkaConnector]
-    def findMaster(): Unit
-    def masterConnected(master: Option[ActorRef]): Unit
-  }
+  val masterBirth: Local[Long] on Master
+  def masterConnectWorker(worker: ActorRef): Local[AkkaConnector] on Master
+  def masterRegisterNewWorker(): Local[WorkerId] on Master
+  def masterRegisterWorker(workerId: WorkerId): Local[Unit] on Master
 
-  placed[MasterProxy] { implicit! =>
-    peer.findMaster()
+  def workerStarted(): Local[Unit] on Worker
+  def workerRegistered(workerId: WorkerId, masterInfo: MasterInfo): Local[Unit] on Worker
+  var masterConnected: Local[Boolean] on Worker = _
+
+  def findMaster(): Local[Unit] on MasterProxy
+  def masterConnected(master: Option[ActorRef]): Local[Unit] on MasterProxy
+
+  on[MasterProxy] { implicit! =>
+    findMaster()
     remote[Master].connected changedTo Seq.empty observe { _ =>
-      peer.findMaster()
+      findMaster()
     }
   }
 
-  val registerNew = placed[Worker] { implicit! => Evt[ActorRef] }
+  val registerNew = on[Worker] { implicit! => Evt[ActorRef] }
 
-  val registerNewWorker = placed[MasterProxy].sbj { implicit! => master: Remote[Master] =>
-    (registerNew.asLocalFromAllSeq 
+  val registerNewWorker = on[MasterProxy] sbj { implicit! => master: Remote[Master] =>
+    (registerNew.asLocalFromAllSeq
       map { case (_, ref) => ref -> remote[Master].connected().headOption }
       collect { case (ref, connected) if connected contains master => ref })
   }
 
-  placed[Master] { implicit! =>
+  on[Master] { implicit! =>
     registerNewWorker.asLocalFromAllSeq observe { case (_, ref) =>
-      remote[Worker] connect peer.connectWorker(ref)
+      remote[Worker] connect masterConnectWorker(ref)
     }
 
     remote[Worker].joined += { worker =>
-      registerWorker(peer.registerNewWorker(), worker)
+      registerWorker(masterRegisterNewWorker(), worker)
     }
   }
 
-  placed[Worker].main { implicit! =>
-    registerNew fire peer.self
-    peer.started()
+  def main() = on[Worker] { implicit! =>
+    registerNew fire self
+    workerStarted()
   }
 
-  placed[Worker] { implicit! =>
-    peer.registerWorker notify { workerId =>
-      remote[Master].sbj.capture(workerId) { implicit! => worker: Remote[Worker] =>
-        registerWorker(workerId, worker)
-      }
+  def registerWorker(workerId: WorkerId): Local[Unit] on Worker = placed { implicit! =>
+    on[Master].run.capture(workerId) sbj { implicit! => worker: Remote[Worker] =>
+      registerWorker(workerId, worker)
     }
-
-    remote[Master].connected observe { connected => peer.masterConnected(connected.nonEmpty) }
-
-    peer.connectMaster notify { remote[Master] connect _ }
   }
 
-  placed[MasterProxy] { implicit! =>
-    peer.connectMaster notify { remote[Master] connect _ }
+  on[Worker] { implicit! =>
+    remote[Master].connected observe { connected => masterConnected = connected.nonEmpty }
+  }
 
+  def workerConnectMaster(connector: AkkaConnector) = on[Worker] local { implicit! =>
+    remote[Master] connect connector
+  }
+
+  def proxyConnectMaster(connector: AkkaConnector) = on[MasterProxy] local { implicit! =>
+    remote[Master] connect connector
+  }
+
+  on[MasterProxy] { implicit! =>
     Signal { remote[Master].connected().headOption }.changed map {
       _ map { _.protocol.asInstanceOf[AkkaEnpoint].actorRef }
-    } observe peer.masterConnected
+    } observe masterConnected
   }
 
-  def registerWorker(workerId: WorkerId, worker: Remote[Worker]) = placed[Master].local { implicit! =>
-    peer.registerWorker(workerId)
-    val masterInfo = MasterInfo(peer.self, peer.birth)
-    remote.on(worker).capture(workerId, masterInfo) { implicit! =>
-      peer.workerRegistered(workerId, masterInfo)
+  def registerWorker(workerId: WorkerId, worker: Remote[Worker]): Local[Unit] on Master = placed { implicit! =>
+    masterRegisterWorker(workerId)
+    val masterInfo = MasterInfo(self, masterBirth)
+    on(worker).run.capture(workerId, masterInfo) { implicit! =>
+      workerRegistered(workerId, masterInfo)
     }
   }
 }

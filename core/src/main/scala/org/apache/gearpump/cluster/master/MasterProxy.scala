@@ -51,16 +51,15 @@ class MasterProxy(masters: Iterable[ActorPath], timeout: FiniteDuration)
 
   private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
 
-  private val connectMaster = Notifier[AkkaConnector]
-
   private var master = Option.empty[ActorRef]
 
-  loci.multitier setup new multitier.MasterProxy {
-    def connect = listen[multitier.Worker] { workerListener }
+  private def multitierInstance = multitierRuntime.instance.value.get.get
 
-    override def context = loci.contexts.Immediate.global
+  private val multitierRuntime = loci.multitier start new Instance[multitier.MasterProxy](
+      loci.contexts.Immediate.global,
+      listen[multitier.Worker] { workerListener }) {
 
-    val connectMaster = MasterProxy.this.connectMaster.notification
+    implicit val self = MasterProxy.this.self
 
     def findMaster() =
       repeatActionUtil(timeout) {
@@ -96,7 +95,7 @@ class MasterProxy(masters: Iterable[ActorPath], timeout: FiniteDuration)
     case message: AkkaMultitierMessage if master.nonEmpty =>
       workerListener process (sender, message)
     case ActorIdentity(_, Some(receptionist)) =>
-      connectMaster(masterConnector newConnection receptionist)
+      multitierInstance retrieve multitier.proxyConnectMaster(masterConnector newConnection receptionist)
       if (master.isEmpty) {
         master = Some(receptionist)
       }
