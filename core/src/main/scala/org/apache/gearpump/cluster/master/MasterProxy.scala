@@ -53,7 +53,7 @@ class MasterProxy(masters: Iterable[ActorPath], timeout: FiniteDuration)
 
   private var master = Option.empty[ActorRef]
 
-  private def multitierInstance = multitierRuntime.instance.value.get.get
+  private def multitierInstance = multitierRuntime.instance.current.get
 
   private val multitierRuntime = loci.multitier start new Instance[multitier.MasterProxy](
       loci.contexts.Immediate.global,

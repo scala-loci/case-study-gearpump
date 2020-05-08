@@ -25,7 +25,7 @@ import loci.contexts.Immediate.Implicits.global
 import akka.actor.{Actor, ActorRef}
 import scala.collection.mutable
 import scala.concurrent.Promise
-import scala.util.Success
+import scala.util.{Success, Try}
 
 class AkkaEnpoint(val setup: ConnectionSetup[AkkaEnpoint], val actorRef: ActorRef)
     extends Protocol with SetupInfo with SecurityInfo with SymmetryInfo with Bidirectional {
@@ -40,68 +40,68 @@ class AkkaConnection(val protocol: AkkaEnpoint)(
   implicit val sender: ActorRef = Actor.noSender)
     extends Connection[AkkaEnpoint] {
   private var isOpen = true
-  private val doClosed = Notifier[Unit]
-  private val doReceive = Notifier[MessageBuffer]
+  private val doClosed = Notice.Steady[Unit]
+  private val doReceive = Notice.Stream[MessageBuffer]
 
-  val closed = doClosed.notification
-  val receive = doReceive.notification
+  val closed = doClosed.notice
+  val receive = doReceive.notice
 
   def open = isOpen
 
   def send(data: MessageBuffer) =
-    protocol.actorRef ! AkkaMultitierMessage(Some(data.toString(0, data.length)))
+    protocol.actorRef ! AkkaMultitierMessage(Some(data.decodeString))
 
   def close() = {
     protocol.actorRef ! AkkaMultitierMessage(None)
     isOpen = false
-    doClosed()
+    doClosed.set()
   }
 
   def process(message: AkkaMultitierMessage) = message.data match {
     case Some(data) =>
-      doReceive(MessageBuffer fromString data)
+      doReceive fire (MessageBuffer encodeString data)
     case None =>
       isOpen = false
-      doClosed()
+      doClosed.set()
   }
 }
 
 class AkkaConnectorFactory {
-  val requestors = mutable.Map.empty[ActorRef, AkkaConnector]
+  val connectors = mutable.Map.empty[ActorRef, AkkaConnector]
 
   def newConnection(actorRef: ActorRef)(
       implicit sender: ActorRef = Actor.noSender) = {
-    val requestor = new AkkaConnector
-    requestor newConnection actorRef
-    requestors += actorRef -> requestor
-    requestor
+    val connector = new AkkaConnector
+    connector newConnection actorRef
+    connectors += actorRef -> connector
+    connector
   }
 
   def process(actorRef: ActorRef, message: AkkaMultitierMessage) =
-    requestors get actorRef foreach { _ process message }
+    connectors get actorRef foreach { _ process message }
 }
 
 class AkkaConnector extends Connector[AkkaEnpoint] {
-  private val promise = Promise[AkkaConnection]
+  private val connection = Notice.Steady[Try[AkkaConnection]]
 
-  def connect(handler: Handler[AkkaEnpoint]) =
-    promise.future onComplete { handler notify _ }
+  def connect(connectionEstablished: Connected[AkkaEnpoint]) =
+    connection.notice foreach connectionEstablished.set
 
   def newConnection(actorRef: ActorRef)(
       implicit sender: ActorRef = Actor.noSender) =
-    promise success new AkkaConnection(new AkkaEnpoint(this, actorRef))
+    connection.set(Success(new AkkaConnection(new AkkaEnpoint(this, actorRef))))
 
   def process(message: AkkaMultitierMessage) =
-    promise.future.value foreach { _ foreach { _ process (message) } }
+    connection.notice.current foreach { _ foreach { _ process message } }
 }
 
 class AkkaListener extends Listener[AkkaEnpoint] {
-  var connectionHandler = Option.empty[Handler[AkkaEnpoint]]
+  var connected = Option.empty[Connected[AkkaEnpoint]]
 
   val connections = mutable.Map.empty[ActorRef, AkkaConnection]
 
-  protected def startListening(handler: Handler[AkkaEnpoint]) = {
-    connectionHandler = Some(handler)
+  protected def startListening(connectionEstablished: Connected[AkkaEnpoint]) = {
+    connected = Some(connectionEstablished)
     Success(new Listening { def stopListening() = () })
   }
 
@@ -109,9 +109,9 @@ class AkkaListener extends Listener[AkkaEnpoint] {
       implicit sender: ActorRef = Actor.noSender) = {
     connections getOrElseUpdate (actorRef, {
       val connection = new AkkaConnection(new AkkaEnpoint(this, actorRef))
-      connection.closed notify { _ => connections -= actorRef }
+      connection.closed foreach { _ => connections -= actorRef }
       connections += actorRef -> connection
-      connectionHandler foreach { _ notify Success(connection) }
+      connected foreach { _ fire Success(connection) }
       connection
     }) process message
   }

@@ -89,7 +89,7 @@ private[cluster] class Worker(masterOrMasterProxy: ActorRef) extends Actor with 
 
   private val multitier = new Multitier()(context.system.asInstanceOf[ExtendedActorSystem])
 
-  private def multitierInstance = multitierRuntime.instance.value.get.get
+  private def multitierInstance = multitierRuntime.instance.current.get
 
   private var multitierRuntime: Runtime[multitier.Worker] = _
 
